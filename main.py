@@ -2,7 +2,7 @@
 
 import torch
 from torch import nn
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, random_split
 from torchvision import datasets, transforms
 
 from utils import LRSchedulerOnPlateau
@@ -271,6 +271,36 @@ def evaluate(model, loader, criterion, device):
     return total_loss / total, correct / total
 
 
+def evaluate_metrics(model, loader, criterion, device, num_classes=10):
+    model.eval()
+    total_loss = 0.0
+    correct = 0
+    total = 0
+    per_class_correct = torch.zeros(num_classes, device=device)
+    per_class_total = torch.zeros(num_classes, device=device)
+
+    with torch.no_grad():
+        for x, y in loader:
+            x = x.to(device)
+            y = y.to(device)
+
+            logits = model(x)
+            loss = criterion(logits, y)
+
+            total_loss += loss.item() * x.size(0)
+            preds = logits.argmax(dim=1)
+            correct += (preds == y).sum().item()
+            total += x.size(0)
+
+            for cls in range(num_classes):
+                cls_mask = y == cls
+                per_class_total[cls] += cls_mask.sum()
+                per_class_correct[cls] += (preds[cls_mask] == cls).sum()
+
+    per_class_acc = (per_class_correct / per_class_total.clamp(min=1)).tolist()
+    return total_loss / total, correct / total, per_class_acc
+
+
 def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -281,11 +311,15 @@ def main():
         ]
     )
 
-    train_dataset = datasets.MNIST(
+    full_dataset = datasets.MNIST(
         root="data", train=True, download=True, transform=transform
     )
-    test_dataset = datasets.MNIST(
-        root="data", train=False, download=True, transform=transform
+    test_size = int(0.1 * len(full_dataset))
+    train_size = len(full_dataset) - test_size
+    train_dataset, test_dataset = random_split(
+        full_dataset,
+        [train_size, test_size],
+        generator=torch.Generator().manual_seed(42),
     )
 
     train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
@@ -321,6 +355,14 @@ def main():
             f"val_loss={val_loss:.4f} val_acc={val_acc:.4f} "
             f"lr={optim_adapter.learning_rate:.6f}"
         )
+
+    test_loss, test_acc, per_class_acc = evaluate_metrics(
+        model, test_loader, criterion, device, num_classes=10
+    )
+    print(f"\nFinal test_loss={test_loss:.4f} test_acc={test_acc:.4f}")
+    print("Per-class accuracy:")
+    for idx, acc in enumerate(per_class_acc):
+        print(f"  class {idx}: {acc:.4f}")
 
 
 if __name__ == "__main__":
